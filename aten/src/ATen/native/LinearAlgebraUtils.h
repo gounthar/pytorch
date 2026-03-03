@@ -117,9 +117,21 @@ inline int64_t batchCount(const Tensor& batched_matrices) {
   return result;
 }
 
-// Computes the number of elements of a matrix in a batched matrix tensor
+/*
+ * Computes the offset between consecutive matrices in a batched tensor.
+ * IMPORTANT ASSUMPTION: columns and rows should not be overlapping!
+ */
 inline int64_t matrixStride(const Tensor& batched_matrices) {
-  return batched_matrices.size(-1) * batched_matrices.size(-2);
+  // Note: this works for both col-major-/row-major-like matrices,
+  // i.e. (contigous cols/rows some stride apart, with potential holes
+  // between cols/rows).
+  // TODO: do we call this function on row-major input?
+  // If not, then simplify the function's body.
+  const auto nrows = batched_matrices.size(-2);
+  const auto ncols = batched_matrices.size(-1);
+  const auto row_stride = batched_matrices.stride(-2);
+  const auto col_stride = batched_matrices.stride(-1);
+  return std::max(nrows * row_stride, ncols * col_stride);
 }
 
 // Validates input shapes for operations on batches of square matrices (inverse, cholesky, symeig, eig)
