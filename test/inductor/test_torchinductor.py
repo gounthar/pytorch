@@ -2949,7 +2949,9 @@ class CommonTemplate:
 
     def test_comparison_scalar_type_promotion_bf16(self):
         if self.device == "mps":
-            raise unittest.SkipTest("MPS codegen doesn't upcast bf16 constants to float32")
+            raise unittest.SkipTest(
+                "MPS codegen doesn't upcast bf16 constants to float32"
+            )
 
         def fn(x):
             return x == 3.14
