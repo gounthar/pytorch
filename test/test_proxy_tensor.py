@@ -422,34 +422,36 @@ def forward(self, x_1):
 
     def test_make_fx_second_order_grad(self):
         # Regression test for https://github.com/pytorch/pytorch/issues/175477
-        # Autograd's save-for-backward internally detaches saved tensors.
-        # make_fx must decompose these detach ops to alias so they don't
-        # block gradient flow when the traced graph is replayed with
-        # create_graph=True for higher-order differentiation.
-        def fn(x, weight):
+        # Autograd's save-for-backward internally detaches saved tensors via
+        # shallow_copy_and_detach. PyInterpreterVTable::detach_or_alias_for_save
+        # dispatches aten.alias (not aten.detach) when tracing, so these
+        # internal operations don't block gradient flow when the traced graph
+        # is replayed with create_graph=True for higher-order differentiation.
+        def fn(x, w):
             x = x.detach().requires_grad_(True)
-            h = x @ weight.T
-            energy = (h / torch.sqrt((h ** 2).mean(-1, keepdim=True) + 1e-5)).pow(2).sum()
+            # sqrt saves its output for backward; this is the op whose
+            # internal detach previously blocked 2nd-order gradient flow.
+            energy = torch.sqrt(torch.abs(x * w)).sum()
             force = -torch.autograd.grad(energy, x, create_graph=True)[0]
             return energy, force
 
-        x = torch.randn(4, 3)
-        weight = torch.randn(8, 3, requires_grad=True)
+        x = torch.randn(4)
+        w = torch.randn(4, requires_grad=True)
 
         # Eager reference
-        weight.grad = None
-        e_eager, f_eager = fn(x, weight)
+        w.grad = None
+        e_eager, f_eager = fn(x, w)
         (e_eager + f_eager.sum()).backward()
-        grad_eager = weight.grad.clone()
+        grad_eager = w.grad.clone()
 
         # Traced
-        weight.grad = None
+        w.grad = None
         traced = make_fx(fn, tracing_mode=self.tracing_mode, _allow_non_fake_inputs=True)(
-            x.clone(), weight.clone().requires_grad_(True)
+            x.clone(), w.clone().requires_grad_(True)
         )
-        e_traced, f_traced = traced(x, weight)
+        e_traced, f_traced = traced(x, w)
         (e_traced + f_traced.sum()).backward()
-        grad_traced = weight.grad.clone()
+        grad_traced = w.grad.clone()
 
         self.assertEqual(grad_eager, grad_traced)
 
