@@ -22,7 +22,7 @@ on:
         default: ''
       compilation_config:
         description: |
-          A JSON string for vLLM --compilation-config, applied to all benchmark tests, e.g. '{"cudagraph_mode": "PIECEWISE", "use_inductor_graph_partition": true}'
+          A JSON string for vLLM --compilation-config, applied to all benchmark tests, e.g. {"cudagraph_mode": "PIECEWISE", "use_inductor_graph_partition": true}
         required: false
         type: string
         default: ''
