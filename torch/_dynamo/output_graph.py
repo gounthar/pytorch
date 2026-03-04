@@ -628,6 +628,10 @@ class OutputGraph(OutputGraphCommon):
             _aotautograd_guards=[],
         )
         self.tracers = [SubgraphTracer(self, is_export=export)]
+        # When non-None, VariableBuilder records every source it processes
+        # into this set. Used by invoke_subgraph reuse to capture all sources
+        # accessed during a subgraph trace (see build_reuse_condition).
+        self.traced_sources: set[Source] | None = None
         # Map from graph input's `Source` to its `VariableTracker` to
         # de-duplicate graph inputs by source and reuse the tracker
         self.input_source_to_var: dict[Source, VariableTracker] = {}
@@ -3303,8 +3307,10 @@ class SubgraphTracer(fx.Tracer):
         # This is set when enable_side_effects_in_hop=True for HOPs like invoke_subgraph
         # and checkpoint (when skip_fwd_side_effects_in_bwd_under_checkpoint config is True).
         self.allow_side_effects_in_hop = False
-        # Set to True when a side effect is detected and allowed (not raised).
-        self.has_side_effect = False
+        # User code stack at the point where an externally-visible side effect
+        # was first detected and allowed (not raised).  None means no side
+        # effect; non-None means one occurred.
+        self.side_effect_stack: traceback.StackSummary | None = None
 
         # True if this tracer is currently tracing (reconstructing) into a Python generator
         self.is_reconstructing_generator = False
