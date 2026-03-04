@@ -3,6 +3,8 @@ from typing import TypeAlias, Union
 
 
 try:
+    # temporarily disabled due to graph API 400 errors, re-enable once fixed
+    raise ImportError("fbscribelogger temporarily disabled")
     from fbscribelogger import (  # type: ignore[import-untyped, import-not-found]
         make_scribe_logger,
     )
