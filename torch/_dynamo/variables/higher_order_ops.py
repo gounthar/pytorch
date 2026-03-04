@@ -5226,32 +5226,19 @@ def _has_mutated_vars(
     tx: "InstructionTranslator",
     traced_sources: set[Any],
 ) -> bool:
-    """Check if any variable accessed by the subgraph has been mutated.
+    """Check if any source accessed by the subgraph has been mutated.
 
-    Guards are snapshotted on sources, but if the object behind a source has
-    been mutated (e.g. ``cfg.c = 10``), the guard would still resolve to the
-    original (pre-mutation) value because the actual Python object isn't
-    updated until codegen. We must bail out of reuse in this case.
-
-    traced_sources contains all sources accessed via VariableBuilder during
-    the subgraph trace, plus cell sources from load_cell. This covers both
-    direct inputs (arg_sources) and captured variables (freevars, cells).
+    SideEffects.mutated_sources records the exact AttrSource for every
+    store_attr call. A simple set intersection with traced_sources tells
+    us whether any source the subgraph read was later written to.
     """
-    from torch._dynamo.source import is_from_source
-
-    for var in tx.output.side_effects._get_modified_vars():
-        var_source = getattr(var, "source", None)
-        if var_source is None:
-            continue
-        for ts in traced_sources:
-            if is_from_source(ts, var_source):
-                hc_log.debug(
-                    "subgraph_reuse: mutated variable detected -- %s (source: %r)",
-                    type(var).__name__,
-                    var_source,
-                )
-                return True
-
+    overlap = tx.output.side_effects.mutated_sources & traced_sources
+    if overlap:
+        hc_log.debug(
+            "subgraph_reuse: mutated sources detected -- %s",
+            overlap,
+        )
+        return True
     return False
 
 
