@@ -58,6 +58,7 @@ from torch._guards import TracingContext
 from torch._higher_order_ops.flat_apply import flat_apply
 from torch._higher_order_ops.torchbind import call_torchbind
 from torch._library.opaque_object import (
+    _maybe_register_enum_as_opaque,
     is_opaque_reference_type,
     is_opaque_type,
     is_opaque_value_type,
@@ -771,6 +772,11 @@ class VariableBuilder:
         if id_dispatch is not None:
             return id_dispatch(self, value)
 
+        # Auto-register enum.Enum subclasses as opaque value types so they
+        # are handled by TorchScriptObjectVariable below.
+        if isinstance(value, enum.Enum):
+            _maybe_register_enum_as_opaque(type(value))
+
         # Everything else (NB: order matters!)
         if (
             isinstance(value, torch.Tensor)
@@ -955,9 +961,7 @@ class VariableBuilder:
             items = [SourcelessBuilder.create(self.tx, v) for v in value]
             self.install_guards(GuardBuilder.EQUALS_MATCH)
             return FrozensetVariable(items, source=self.source)
-        elif isinstance(
-            value, (enum.Enum, torch.DispatchKey, torch._C._functorch.TransformType)
-        ):
+        elif isinstance(value, (torch.DispatchKey, torch._C._functorch.TransformType)):
             self.install_guards(GuardBuilder.ID_MATCH)
             return EnumVariable(value=value, source=self.source)
         elif DebuggingVariable.is_reorderable_logging_function(value):
@@ -1501,14 +1505,15 @@ class VariableBuilder:
                 # ID_MATCH even if its a global variable.
                 self.install_guards(GuardBuilder.CLASS_MATCH)
 
-            if is_opaque_type(value):
-                return OpaqueObjectClassVariable(
+            if isinstance(value, type) and issubclass(value, enum.Enum):
+                _maybe_register_enum_as_opaque(value)
+                return UserDefinedEnumClassVariable(
                     value,
                     source=self.source,
                 )
 
-            if isinstance(value, type) and issubclass(value, enum.Enum):
-                return UserDefinedEnumClassVariable(
+            if is_opaque_type(value):
+                return OpaqueObjectClassVariable(
                     value,
                     source=self.source,
                 )
@@ -4160,12 +4165,17 @@ class SourcelessBuilder:
         elif is_function_or_wrapper(value):
             # pyrefly: ignore[not-callable, bad-argument-count]
             return trace_rules.lookup(value)(value)
-        elif isinstance(
-            value, (enum.Enum, torch.DispatchKey, torch._C._functorch.TransformType)
-        ):
+        elif isinstance(value, (torch.DispatchKey, torch._C._functorch.TransformType)):
             return EnumVariable(value)
+        elif isinstance(value, enum.Enum):
+            _maybe_register_enum_as_opaque(type(value))
+            return TorchScriptObjectVariable.create(
+                value,
+                value,
+            )
         elif isinstance(value, (type, abc.ABCMeta)):
             if isinstance(value, type) and issubclass(value, enum.Enum):
+                _maybe_register_enum_as_opaque(value)
                 return UserDefinedEnumClassVariable(value)
             return UserDefinedClassVariable(value)
         elif isinstance(value, types.MethodWrapperType):

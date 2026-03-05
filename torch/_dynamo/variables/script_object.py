@@ -151,6 +151,17 @@ class OpaqueObjectClassVariable(UserDefinedVariable):
         source = AttrSource(self.source, name) if self.source else None
         return VariableTracker.build(tx, obj, source)
 
+    def call_obj_hasattr(
+        self, tx: "InstructionTranslator", name: str
+    ) -> ConstantVariable:
+        if self.source:
+            from ..guards import GuardBuilder, install_guard
+
+            source = AttrSource(self.source, name)
+            install_guard(source.make_guard(GuardBuilder.HASATTR))
+            return ConstantVariable(hasattr(self.value, name))
+        return super().call_obj_hasattr(tx, name)
+
     def call_function(
         self,
         tx: "InstructionTranslator",
