@@ -72,7 +72,7 @@ from torch.utils._python_dispatch import (
 )
 from torch.utils._stats import count
 from torch.utils._thunk import Thunk
-from torch.utils.weak import _WeakHashRef, WeakIdKeyDictionary, WeakTensorKeyDictionary
+from torch.utils.weak import WeakIdKeyDictionary, WeakIdRef, WeakTensorKeyDictionary
 
 from ._backward_state import BackwardState
 from .sym_node import SymNode
@@ -1330,7 +1330,7 @@ class PythonKeyTracer(Tracer):
         self.tensor_tracker = WeakTensorKeyDictionary()
         self.symnode_tracker = _SymNodeDict()
         self.script_object_tracker = WeakIdKeyDictionary(
-            dict=None, ref_type=_WeakHashRef
+            dict=None, ref_type=WeakIdRef
         )
         self.sympy_expr_tracker = {}
 
@@ -1602,9 +1602,13 @@ def wrap_key(
 
         out = f(*tensors)  # type:ignore[call-arg]
         out = pytree.tree_map_only(Tensor, get_tensor_proxy_slot, out)
-        out = pytree.tree_map_only(
-            _AnyScriptObject, lambda t: get_proxy_slot(t, tracer, t, lambda x: x), out
-        )
+
+        def unwrap_objs(t: object) -> object:
+            if is_opaque_value(t) and not isinstance(t, _AnyScriptObject):
+                return get_proxy_slot(t, tracer, t, lambda x: x)
+            return t
+
+        out = pytree.tree_map(unwrap_objs, out)
 
         def get_sym_proxy_slot(t: PySymType) -> Proxy:
             return get_proxy_slot(t, tracer).force()
@@ -1883,7 +1887,7 @@ def _compute_proxy(
 
 
 class _GraphAppendingTracerEx(fx.proxy.GraphAppendingTracer):
-    script_object_tracker: MutableMapping[_AnyScriptObjectType, Proxy]
+    script_object_tracker: MutableMapping[_AnyScriptObjectType | OpaqueType, Proxy]
     symnode_tracker: MutableMapping[PySymType, _PySymProxyType]
     tensor_tracker: MutableMapping[Tensor, _ProxyTensor]
     sympy_expr_tracker: dict[sympy.Symbol, _SympyExprTrackerValue]
@@ -1897,7 +1901,7 @@ class _GraphAppendingTracerEx(fx.proxy.GraphAppendingTracer):
         self.tensor_tracker = WeakTensorKeyDictionary()
         self.sympy_expr_tracker = {}
         self.script_object_tracker = WeakIdKeyDictionary(
-            dict=None, ref_type=_WeakHashRef
+            dict=None, ref_type=WeakIdRef
         )
         # Stores the torch function that was called during tracing
         self.torch_fn_metadata = None

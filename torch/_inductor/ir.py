@@ -114,6 +114,7 @@ from .utils import (
     tensor_is_aligned,
 )
 from .virtualized import ops, OpsValue, V
+from torch._library.fake_class_registry import FakeScriptObject
 
 
 if TYPE_CHECKING:
@@ -256,6 +257,7 @@ def validate_ir(node_or_nodes: _NodeOrNodes | None) -> None:
                     int,
                     EffectfulKernel,
                     ShapeAsConstantBuffer,
+                    OpaqueMultiOutput,
                 ),
             ), (
                 f"Found {type(nodes)}, which is not a supported top level IR node. See [Note: Inductor IR]"
@@ -6280,6 +6282,8 @@ class ExternKernel(InputsKernel):
                 example_args.append(V.graph.torchbind_constants[x.get_name()])
             elif isinstance(x, TorchBindObject):
                 example_args.append(x.get_value())
+            elif isinstance(x, OpaqueMultiOutput):
+                example_args.append(x.opaque_example_value)
             elif isinstance(x, torch._inductor.ir.GeneratorState):
                 device_index = x.device.index
                 assert x.device.type == "cuda" and device_index is not None
@@ -6436,7 +6440,7 @@ class ExternKernel(InputsKernel):
             # TODO(jansel): impose layout preference on realized buffer
             x.realize()
             return x
-        if isinstance(x, (NonTensorObj, ShapeAsConstantBuffer)):
+        if isinstance(x, (NonTensorObj, ShapeAsConstantBuffer, OpaqueMultiOutput)):
             return x
         return cls.copy_input(x)
 
@@ -8176,6 +8180,8 @@ class FallbackKernel(ExternKernelAlloc):
             devices = [device for device in device_set if device]
             if len(devices) == 1:
                 return devices[0]
+            if not devices:
+                return None
             for device in devices:
                 assert isinstance(device, torch.device)
                 if is_gpu(device.type):
@@ -8478,10 +8484,12 @@ class FallbackKernel(ExternKernelAlloc):
 
         device = cls.find_device(tensor_args, example_output)
 
-        # Default to CPU for torchbind methods or HOPs that don't produce tensors
+        # Default to CPU for torchbind methods, HOPs, or ops that don't
+        # produce tensors (e.g. custom ops returning only opaque objects)
         if not device and (
             isinstance(kernel, torch._higher_order_ops.torchbind.CallTorchBind)
             or kernel is torch.ops.higher_order.print
+            or example_output is not None
         ):
             device = torch.device("cpu")
 
@@ -8536,6 +8544,13 @@ class FallbackKernel(ExternKernelAlloc):
                 return output
             elif isinstance(output, torch.SymInt):
                 return output.node.expr
+            elif isinstance(output, (torch._C.ScriptObject, FakeScriptObject)) or is_opaque_type(type(output)):
+                return OpaqueMultiOutput(
+                    NoneLayout(device=device),
+                    packed,
+                    indices,
+                    output,
+                )
             else:
                 assert output is None, (
                     f"FallbackKernel output type {type(output)} is not supported"
@@ -8659,6 +8674,22 @@ class MultiOutput(ExternKernel):
             if isinstance(inp, FallbackKernel)
             and len(inp.get_inputs_that_alias_output()) > 0
         ]
+
+
+class OpaqueMultiOutput(MultiOutput):
+    """MultiOutput for opaque objects."""
+
+    def __init__(
+        self,
+        layout: OutputSpec,
+        input: IRNode,
+        indices: list[tuple[Any, ...]],
+        opaque_value: Any,
+    ) -> None:
+        super().__init__(
+            layout, input, indices, skip_size_stride_alignment_checks=True
+        )
+        self.opaque_example_value = opaque_value
 
 
 # We just use a normal dataclass for MutableBox/TensorBox/StorageBox since
