@@ -5894,7 +5894,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
             max_block = self._get_persistent_RBLOCK(tree.numel)
             # Triton's auto-tuner can map a full hardware warp along the
             # reduction axis.  When RBLOCK < warp_size the excess lanes
-            # would execute out-of-bounds global loads.  This results in 
+            # would execute out-of-bounds global loads.  This results in
             # faults on AMD hardware.  Keep the dynamic mask so that all
             # hardware stays correct.
             device = V.graph.get_current_device_or_throw()
