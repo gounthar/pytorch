@@ -1132,6 +1132,25 @@ class MetalKernel(SIMDKernel):
 
 class MetalScheduling(SIMDScheduling):
     kernel_type = MetalKernel  # type: ignore[assignment]
+    MAX_MPS_BUFFER_ARGS = 31
+
+    def _would_exceed_buffer_limit(self, node1: Any, node2: Any) -> bool:
+        all_names: OrderedSet[str] = OrderedSet()
+        for dep in node1.read_writes.reads | node1.read_writes.writes:
+            all_names.add(dep.name)
+        for dep in node2.read_writes.reads | node2.read_writes.writes:
+            all_names.add(dep.name)
+        return len(all_names) > self.MAX_MPS_BUFFER_ARGS
+
+    def can_fuse_vertical(self, node1: Any, node2: Any) -> bool:
+        if not super().can_fuse(node1, node2):
+            return False
+        return not self._would_exceed_buffer_limit(node1, node2)
+
+    def can_fuse_horizontal(self, node1: Any, node2: Any) -> bool:
+        if not super().can_fuse(node1, node2):
+            return False
+        return not self._would_exceed_buffer_limit(node1, node2)
 
     def __init__(self, scheduler: Scheduler | None) -> None:
         super().__init__(scheduler)
