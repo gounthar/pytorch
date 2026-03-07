@@ -862,7 +862,9 @@ def to_dtype(x: TensorBox, dtype: torch.dtype, copy: bool = False):
         return clone(x) if copy else x
 
     def _to_dtype(x):
-        return ops.to_dtype(x, dtype, src_dtype=src_dtype)
+        return ops.to_dtype(
+            x, dtype, src_dtype=src_dtype, use_compute_types=not config.emulate_precision_casts
+        )
 
     return make_pointwise(_to_dtype, override_return_dtype=dtype)(x)
 
