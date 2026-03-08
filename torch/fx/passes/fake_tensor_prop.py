@@ -98,24 +98,30 @@ class FakeTensorProp(torch.fx.Interpreter):
 
         shape_env = self._mode.shape_env
         if shape_env:
+            # Try to compute fresh unbacked bindings normally
             symbol_to_path = compute_unbacked_bindings(shape_env, result)
 
             if symbol_to_path:
                 n.meta["unbacked_bindings"] = symbol_to_path
             else:
-                # Fallback: If result contains unbacked symbols in its shape/stride/storage_offset
-                # but they're not "fresh" (e.g., inherited from inputs like cat/slice),
-                # we still need to propagate unbacked_bindings to avoid crashes in lowering.
-                # This handles cases like: cat([tensor, unbacked_tensor]) -> slice
+                # fallback:
+                # If unbacked symbols exist in shape/stride/storage_offset
+                # but they are not "fresh" (e.g., inherited from cat/slice),
+                # detect them manually to avoid crashes during lowering.
+
                 from torch.fx.experimental.symbolic_shapes import (
                     _free_unbacked_symbols_with_path,
                     free_unbacked_symbols,
                 )
 
-                # Check if result has any unbacked symbols in its metadata
                 all_unbacked = set()
+
                 if isinstance(result, (torch.Tensor, FakeTensor)):
+                    # Collect unbacked symbols from size
                     all_unbacked.update(free_unbacked_symbols(result.size()))
+
+                    # Collect unbacked symbols from stride and storage_offset
+                    # (skip special sparse layouts)
                     if result.layout not in [
                         torch.sparse_csr,
                         torch.sparse_csc,
@@ -127,7 +133,6 @@ class FakeTensorProp(torch.fx.Interpreter):
                             free_unbacked_symbols([result.storage_offset()])
                         )
 
-                # If we found unbacked symbols, create bindings for them
                 if all_unbacked:
                     symbol_to_path = _free_unbacked_symbols_with_path(
                         result,
@@ -136,11 +141,12 @@ class FakeTensorProp(torch.fx.Interpreter):
                         pending=all_unbacked,
                         simplify=False,
                     )
+
                     if symbol_to_path:
                         n.meta["unbacked_bindings"] = symbol_to_path
 
         return result
-
+        
     def propagate(self, *args):
         fake_args = [
             self._mode.from_tensor(a) if isinstance(a, torch.Tensor) else a
