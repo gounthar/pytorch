@@ -101,6 +101,7 @@ class DistMathOpsTest(DTensorTestBase):
             "amin",
             "var",
             "std",
+            "nansum",
         ):
             self.linear_op_reductions(op_str)
 
