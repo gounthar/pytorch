@@ -1021,6 +1021,86 @@ class DistMathOpsTest(DTensorTestBase):
                 self.assertEqual(output_dtensor.full_tensor(), output)
 
     @with_comms
+    def test_scan_ops(self):
+        mesh = self.build_device_mesh()
+        comm_mode = CommDebugMode()
+        inp = torch.rand(3, 5, device=self.device_type)
+
+        shard_dim = 0
+        input_dtensor = distribute_tensor(
+            inp, device_mesh=mesh, placements=[Shard(shard_dim)]
+        )
+
+        for op in [torch.cumprod, torch.logcumsumexp]:
+            for dim in [0, 1]:
+                output = op(inp, dim=dim)
+                with comm_mode:
+                    output_dtensor = op(input_dtensor, dim=dim)
+                if dim == shard_dim:
+                    self.assertTrue(output_dtensor.placements[0].is_replicate())
+                else:
+                    self.assertTrue(output_dtensor.placements[0].is_shard(shard_dim))
+                self.assertEqual(output_dtensor.full_tensor(), output)
+
+    @with_comms
+    def test_scan_ops_with_indices(self):
+        mesh = self.build_device_mesh()
+        comm_mode = CommDebugMode()
+        inp = torch.rand(12, 8, device=self.device_type)
+
+        shard_dim = 0
+        input_dtensor = distribute_tensor(
+            inp, device_mesh=mesh, placements=[Shard(shard_dim)]
+        )
+
+        for op in [torch.cummax, torch.cummin]:
+            for dim in [0, 1]:
+                values, indices = op(inp, dim=dim)
+                with comm_mode:
+                    dt_values, dt_indices = op(input_dtensor, dim=dim)
+                if dim == shard_dim:
+                    self.assertTrue(dt_values.placements[0].is_replicate())
+                else:
+                    self.assertTrue(dt_values.placements[0].is_shard(shard_dim))
+                self.assertEqual(dt_values.full_tensor(), values)
+
+    @with_comms
+    def test_median(self):
+        device_mesh = self.build_device_mesh()
+        tensor = torch.randn(12, 8, device=self.device_type)
+        dtensor = distribute_tensor(tensor, device_mesh, [Shard(0)])
+
+        # Global median
+        self.assertEqual(torch.median(dtensor).full_tensor(), torch.median(tensor))
+
+        # nanmedian global
+        self.assertEqual(
+            torch.nanmedian(dtensor).full_tensor(), torch.nanmedian(tensor)
+        )
+
+    @with_comms
+    def test_dim_reductions_with_indices(self):
+        device_mesh = self.build_device_mesh()
+        tensor = torch.randn(12, 8, device=self.device_type)
+        dtensor = distribute_tensor(tensor, device_mesh, [Shard(0)])
+
+        # nanmedian.dim
+        for dim in range(tensor.ndim):
+            vals, idxs = torch.nanmedian(tensor, dim=dim)
+            dt_vals, dt_idxs = torch.nanmedian(dtensor, dim=dim)
+            self.assertEqual(dt_vals.full_tensor(), vals)
+
+        # kthvalue
+        vals, idxs = torch.kthvalue(tensor, 3, dim=0)
+        dt_vals, dt_idxs = torch.kthvalue(dtensor, 3, dim=0)
+        self.assertEqual(dt_vals.full_tensor(), vals)
+
+        # mode
+        vals, idxs = torch.mode(tensor, dim=1)
+        dt_vals, dt_idxs = torch.mode(dtensor, dim=1)
+        self.assertEqual(dt_vals.full_tensor(), vals)
+
+    @with_comms
     def test_conj_complex_dtensor(self):
         mesh = self.build_device_mesh()
         comm_mode = CommDebugMode()
