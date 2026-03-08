@@ -1,0 +1,169 @@
+name: Build riscv64 wheel
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'PyTorch release tag to build (e.g. v2.10.0)'
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, riscv64]
+    timeout-minutes: 480
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libopenblas-dev liblapack-dev \
+            libprotobuf-dev protobuf-compiler \
+            python3-dev libnuma-dev \
+            cmake g++ ninja-build
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv --system-site-packages /tmp/pytorch-venv
+          . /tmp/pytorch-venv/bin/activate
+          pip install --upgrade pip setuptools wheel setuptools-scm numpy
+
+      - name: Install Python build deps
+        run: |
+          . /tmp/pytorch-venv/bin/activate
+          pip install -r requirements.txt
+
+      - name: Build wheel (CPU-only)
+        env:
+          USE_CUDA: "0"
+          USE_ROCM: "0"
+          USE_DISTRIBUTED: "0"
+          USE_MKLDNN: "0"
+          USE_FBGEMM: "0"
+          USE_NNPACK: "0"
+          USE_QNNPACK: "0"
+          USE_XNNPACK: "0"
+          USE_KINETO: "0"
+          BUILD_TEST: "0"
+          MAX_JOBS: "6"
+          PYTORCH_BUILD_VERSION: ${{ inputs.release_tag && format('{0}', inputs.release_tag) || '0.0.0' }}
+          PYTORCH_BUILD_NUMBER: "1"
+        run: |
+          . /tmp/pytorch-venv/bin/activate
+          # Strip leading 'v' from tag for version
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            export PYTORCH_BUILD_VERSION="${{ inputs.release_tag }}"
+            export PYTORCH_BUILD_VERSION="${PYTORCH_BUILD_VERSION#v}"
+          fi
+          # Use system protoc
+          if command -v protoc &>/dev/null; then
+            export PROTOC=$(command -v protoc)
+          fi
+          python3 setup.py bdist_wheel
+          mkdir -p /tmp/wheels
+          cp dist/torch-*.whl /tmp/wheels/
+
+      - name: Verify platform tag
+        run: |
+          ls /tmp/wheels/*.whl
+          for whl in /tmp/wheels/*.whl; do
+            if echo "$whl" | grep -q "linux_riscv64\|manylinux.*riscv64"; then
+              echo "OK: $whl"
+            else
+              echo "FAIL: $whl does not have riscv64 platform tag"
+              exit 1
+            fi
+          done
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-riscv64
+          path: /tmp/wheels/*.whl
+          retention-days: 90
+
+      - name: Cleanup build tree
+        if: always()
+        run: |
+          rm -rf /tmp/pytorch-venv /tmp/wheels
+          rm -rf build dist
+
+  release:
+    needs: build
+    runs-on: [self-hosted, linux, riscv64]
+    if: success()
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download wheel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wheel-riscv64
+          path: /tmp/wheels/
+
+      - name: Get wheel info
+        id: wheel_info
+        run: |
+          WHL=$(ls /tmp/wheels/*.whl | head -1)
+          BASENAME=$(basename "$WHL")
+          VERSION=$(echo "$BASENAME" | sed 's/^[^-]*-\([^-]*\)-.*/\1/')
+          echo "whl_path=$WHL" >> "$GITHUB_OUTPUT"
+          echo "whl_name=$BASENAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Generate checksums
+        run: |
+          cd /tmp/wheels
+          sha256sum *.whl > SHA256SUMS
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="riscv64-v${{ steps.wheel_info.outputs.version }}"
+          TITLE="riscv64 wheel v${{ steps.wheel_info.outputs.version }}"
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git tag -d "$TAG" 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          gh release create "$TAG" \
+            --title "$TITLE" \
+            --notes "Prebuilt PyTorch riscv64 wheel (CPU-only).
+
+          Built on: BananaPi F3 (SpacemiT K1, rv64imafdcv)
+          Python: $(python3 --version 2>&1)
+          Wheel: ${{ steps.wheel_info.outputs.whl_name }}
+
+          Install:
+          \`\`\`
+          pip install torch --find-links https://github.com/gounthar/pytorch/releases/download/$TAG/
+          \`\`\`" \
+            /tmp/wheels/*.whl \
+            /tmp/wheels/SHA256SUMS
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf /tmp/wheels
+
+  notify-index:
+    needs: release
+    runs-on: ubuntu-latest
+    if: success()
+    steps:
+      - name: Trigger index update
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+        run: |
+          gh api repos/gounthar/riscv64-python-wheels/dispatches \
+            -f event_type=fork-release-published \
+            -f "client_payload[repo]=${{ github.repository }}" \
+            -f "client_payload[tag]=${{ github.ref_name }}"
