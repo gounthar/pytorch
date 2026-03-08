@@ -2366,7 +2366,9 @@ def compile_fx_forward(
         )
 
         inputs_devices = get_inputs_devices(example_inputs, gm)
-        gm = _recursive_joint_graph_passes(gm, input_device=next(iter(inputs_devices)), get_decomp_fn=get_decomp_fn)
+        gm = _recursive_joint_graph_passes(
+            gm, input_device=next(iter(inputs_devices)), get_decomp_fn=get_decomp_fn
+        )
 
         trace_structured(
             "artifact",
@@ -2764,7 +2766,9 @@ def _compile_fx_main(
         gm_meta = model_.meta if isinstance(model_, GraphModule) else None
         compiler_config_extra = create_compiler_config_extra(config, gm_meta)
 
-        _user_provided_decompositions = decompositions is not None or get_decomp_fn is not None
+        _user_provided_decompositions = (
+            decompositions is not None or get_decomp_fn is not None
+        )
         decompositions = (
             decompositions if decompositions is not None else select_decomp_table()
         )
