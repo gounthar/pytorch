@@ -71,13 +71,25 @@ runs:
       shell: bash
       env:
         NO_SUDO: ${{ inputs.no-sudo }}
+        SUBMODULES: ${{ inputs.submodules }}
       run: |
         cd "${GITHUB_WORKSPACE}"
-        # Clean stale submodule dirs
-        if [ -z "${NO_SUDO}" ]; then
-          sudo git submodule foreach --recursive git clean -ffdx
+        if [[ "${SUBMODULES}" == "false" ]]; then
+          # On persistent runners, a previous job may have checked out submodules.
+          # Deinit all submodules to remove stale directories that would otherwise
+          # cause assert_git_not_dirty to report false positives.
+          if [ -z "${NO_SUDO}" ]; then
+            sudo git submodule deinit --all -f 2>/dev/null || true
+          else
+            git submodule deinit --all -f 2>/dev/null || true
+          fi
         else
-          git submodule foreach --recursive git clean -ffdx
+          # Clean stale files inside initialized submodule dirs
+          if [ -z "${NO_SUDO}" ]; then
+            sudo git submodule foreach --recursive git clean -ffdx
+          else
+            git submodule foreach --recursive git clean -ffdx
+          fi
         fi
 
     - name: Clean workspace (try again)
