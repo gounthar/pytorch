@@ -50,6 +50,7 @@ from torch._prims_common.wrappers import (
     elementwise_unary_scalar_wrapper,
     out_wrapper,
 )
+from torch.testing._internal.common_dtype import highest_precision_float
 
 
 # Experimental module containing prototype Python references for existing
@@ -406,8 +407,7 @@ def _broadcast_shapes(*_shapes):
     for shape in shapes:
         if not isinstance(shape, Sequence):
             raise RuntimeError(
-                "Input shapes should be of type ints, a tuple of ints, or a list of ints, got ",
-                shape,
+                f"Input shapes should be of type ints, a tuple of ints, or a list of ints, got {shape}"
             )
 
     # Computes common shape
@@ -1189,6 +1189,16 @@ def _make_elementwise_binary_reference(
     return inner
 
 
+def _binary_op_dtype(
+    a: TensorLikeType | NumberType, b: TensorLikeType | NumberType
+) -> torch.dtype:
+    if isinstance(a, TensorLike):
+        return a.dtype
+    if isinstance(b, TensorLike):
+        return b.dtype
+    return utils.type_to_dtype(type(a))
+
+
 # Add has its own implementation because it has an alpha argument
 @register_decomposition(aten.add)
 @out_wrapper()
@@ -1209,7 +1219,7 @@ def add(
     a, b = _maybe_broadcast(a, b)
 
     if alpha is not None:
-        dtype = a.dtype if isinstance(a, TensorLike) else b.dtype  # type: ignore[union-attr]
+        dtype = _binary_op_dtype(a, b)
         python_type = utils.dtype_to_type(dtype)
         if python_type is not bool and not utils.is_weakly_lesser_type(
             type(alpha), python_type
@@ -1859,7 +1869,7 @@ def sub(
         )
 
     if alpha != 1:
-        dtype = a.dtype if isinstance(a, TensorLike) else b.dtype  # type: ignore[union-attr]
+        dtype = _binary_op_dtype(a, b)
         python_type = utils.dtype_to_type(dtype)
         if not utils.is_weakly_lesser_type(type(alpha), python_type):
             msg = f"alpha argument of type {type(alpha)} cannot be safely cast to type {python_type}!"
@@ -2044,7 +2054,11 @@ def clamp_max(
 
 
 # https://pytorch.org/docs/stable/generated/torch.where.html
-# TODO: implement where.default
+@register_decomposition(aten.where.default)
+def _where_default(pred: Tensor) -> tuple[Tensor, ...]:
+    return torch.nonzero(pred, as_tuple=True)
+
+
 @register_decomposition(aten.where.self)
 @register_decomposition(aten.where.ScalarSelf)
 @register_decomposition(aten.where.ScalarOther)
@@ -3462,6 +3476,10 @@ def native_layer_norm(
         + ", but got input of size "
         + str(input.shape),
     )
+    torch._check(
+        not input.is_complex(),
+        lambda: "native_layer_norm does not support complex inputs",
+    )
 
     input = contiguous(input)
     if weight is not None:
@@ -4325,11 +4343,12 @@ def _index_fill(
         if zero_dim:
             # The clone is necessary so that it returns a fresh tensor rather than a view
             out = out.squeeze(0).clone()
-        # index_fill preserves the strides. index_copy always returns contiguous tensors
-        if out.stride() != x.stride():
-            new_out = torch.empty_like(x)
-            new_out.copy_(out)
-            out = new_out
+        # index_fill preserves the strides for non-overlapping-and-dense inputs
+        # (matching clone(Preserve) behavior). index_copy always returns contiguous tensors.
+        if out.stride() != x.stride() and utils.is_non_overlapping_and_dense_or_false(
+            x
+        ):
+            out = prims.copy_strided(out, x.stride())
         return out
 
 
@@ -4391,7 +4410,7 @@ def squeeze(a: TensorLikeType, dim: DimsType | None = None) -> TensorLikeType:
         return prims.view_of(a)
 
     # Note: squeeze does not modify tensors when the given dim is not a dimension of length 1
-    # would it be better if we just not allow 1 for unbacked at runtiume?
+    # would it be better if we just not allow 1 for unbacked at runtime?
     dims = tuple(d for d in dims if guard_or_false(a.shape[d] == 1))
     if len(dims) == 0:
         return prims.view_of(a)
@@ -5247,10 +5266,11 @@ def new_full(
 
 @aten.empty.out.py_impl(DispatchKey.CompositeImplicitAutograd)
 def empty_out(
-    size: TensorLikeType,
+    size: ShapeType,
     out: TensorLikeType,
     memory_format: torch.memory_format | None = None,
 ) -> TensorLikeType:
+    _maybe_resize_out(out, size, memory_format)
     return out
 
 
@@ -5364,6 +5384,7 @@ def arange(
     # For int64 we truncate arguments to int before calculating length, but
     # other integral dtypes we don't. Weird... but needed to match ATen shapes.
     if dtype == torch.int64 or integer_args:
+        torch._check_value(xstep != 0, lambda: "step must be nonzero")  # type: ignore[possibly-undefined]
         # Uses floordiv to avoid ceil in inductor.
         sgn = bool(xstep > 0) - bool(xstep < 0)  # type: ignore[possibly-undefined]
         length = (xend - xstart + xstep - sgn) // xstep  # type: ignore[possibly-undefined]
@@ -5451,13 +5472,13 @@ def linspace(
             start.dim() == 0,
             lambda: "linspace only supports 0-dimensional start and end tensors",
         )
-        start = _maybe_convert_to_dtype(start, torch.float64)
+        start = _maybe_convert_to_dtype(start, highest_precision_float(device))
     if isinstance(end, TensorLikeType):
         torch._check(
             end.dim() == 0,
             lambda: "linspace only supports 0-dimensional start and end tensors",
         )
-        end = _maybe_convert_to_dtype(end, torch.float64)
+        end = _maybe_convert_to_dtype(end, highest_precision_float(device))
 
     if builtins.any(isinstance(arg, complex) for arg in (start, end, steps)):
         default_complex_dtype = utils.corresponding_complex_dtype(
